@@ -1,0 +1,1 @@
+{"features": ["load_lag_1h", "load_lag_24h", "load_lag_168h", "load_roll_mean_24h", "load_roll_std_24h", "hour_of_day", "day_of_week", "day_of_month", "month", "is_weekend", "season", "is_holiday"]}
