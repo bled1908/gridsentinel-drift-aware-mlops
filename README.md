@@ -18,4 +18,16 @@ drift detection, retraining, and monitoring.
 - Drift detection
 - Experiment tracking
 
+## 🔍 Drift Monitoring (In Progress)
+The pipeline includes an initial drift detection and validation layer
+to monitor changes in input data distributions and trigger model
+retraining when necessary.
+
+
+## 🔁 Policy-Based Retraining Experiments
+The system evaluates multiple retraining policies under different
+drift scenarios (holiday, seasonal, long-term) and logs performance
+metrics and retraining events for comparative analysis.
+
+
 ⚠️ Project is under active development. Features will be added incrementally.

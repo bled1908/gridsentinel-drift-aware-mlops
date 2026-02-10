@@ -1,0 +1,3 @@
+timestamp,event,retrain_time_seconds,trigger_reason
+2009-12-20,retrain,0.11345672607421875,policy_trigger
+2009-12-27,retrain,0.10906267166137695,policy_trigger

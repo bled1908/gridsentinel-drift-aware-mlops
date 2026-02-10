@@ -1,0 +1,14 @@
+timestamp,event,retrain_time_seconds,trigger_reason
+2010-09-01,retrain,0.12298083305358887,policy_trigger
+2010-09-08,retrain,0.11455678939819336,policy_trigger
+2010-09-15,retrain,0.11775708198547363,policy_trigger
+2010-09-22,retrain,0.11624503135681152,policy_trigger
+2010-09-29,retrain,0.13889503479003906,policy_trigger
+2010-10-06,retrain,0.13501739501953125,policy_trigger
+2010-10-13,retrain,0.12701869010925293,policy_trigger
+2010-10-20,retrain,0.12759780883789062,policy_trigger
+2010-10-27,retrain,0.11897945404052734,policy_trigger
+2010-11-03,retrain,0.11985468864440918,policy_trigger
+2010-11-10,retrain,0.11846685409545898,policy_trigger
+2010-11-17,retrain,0.11878609657287598,policy_trigger
+2010-11-24,retrain,0.11357879638671875,policy_trigger
