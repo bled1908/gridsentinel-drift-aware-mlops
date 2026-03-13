@@ -1,17 +1,42 @@
 # Python
 __pycache__/
-*.pyc
+*.py[cod]
+*.pyo
+*.pyd
 
 # Virtual environments
 .venv/
+venv/
 env/
 
-# Data
+# Data (large raw files)
 data/raw/
 data/processed/
+data/weather/
+
+# Trained models (large binaries)
+models/*.json
+
+# Experiment outputs
+results/experiments/
+results/multi_run*/
+results/variance_test*/
+results/statistical_analysis*/
+results/baseline_comparison/
+
+# Diagnostic / scratch files
+diagnostic_*.txt
+*.log
 
 # Jupyter
 .ipynb_checkpoints/
+notebooks/.ipynb_checkpoints/
+
+# IDEs
+.vscode/
+.idea/
+*.suo
+*.user
 
 # OS
 .DS_Store
