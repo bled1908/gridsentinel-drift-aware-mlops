@@ -16,9 +16,11 @@ warnings.filterwarnings('ignore')
 class ForecastingPipeline:
     """Main MLOps pipeline for drift-aware retraining experiments."""
     
-    def __init__(self, config_path: str):
+    def __init__(self, config_path: str, random_seed: int = 42):
         with open(config_path, 'r') as f:
             self.config = yaml.safe_load(f)
+        
+        self.random_seed = random_seed
             
         # Load Data
         print("Loading data...")
@@ -26,9 +28,12 @@ class ForecastingPipeline:
         self.val_df = pd.read_csv(self.config['data']['val_path'], index_col=0, parse_dates=True)
         self.test_df = pd.read_csv(self.config['data']['test_path'], index_col=0, parse_dates=True)
         
-        # Initialize Forecaster
-        print("Initializing Initial Model...")
-        self.forecaster = LoadForecaster(model_params=self.config['model']['hyperparameters'])
+        # Initialize Forecaster with random seed
+        print(f"Initializing Initial Model with seed {random_seed}...")
+        self.forecaster = LoadForecaster(
+            model_params=self.config['model']['hyperparameters'],
+            random_seed=random_seed
+        )
         
         # Train Initial Model
         X_train, y_train = self._split_X_y(self.train_df)
@@ -149,6 +154,11 @@ class ForecastingPipeline:
                 
                 if len(retrain_data) > 100: # Safety check
                     X_retrain, y_retrain = self._split_X_y(retrain_data)
+                    # Create new forecaster with same seed for retraining
+                    self.forecaster = LoadForecaster(
+                        model_params=self.config['model']['hyperparameters'],
+                        random_seed=self.random_seed
+                    )
                     self.forecaster.fit(X_retrain, y_retrain)
                     
                     retrain_elapsed = time.time() - retrain_start_time
@@ -198,8 +208,14 @@ if __name__ == '__main__':
     parser.add_argument('--config', type=str, required=True, help='Path to config YAML')
     parser.add_argument('--scenario', type=str, default=None, help='Test scenario filter')
     parser.add_argument('--output', type=str, default='results/experiments', help='Output dir')
+    parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility')
     args = parser.parse_args()
     
-    pipeline = ForecastingPipeline(args.config)
+    # Set random seeds for reproducibility
+    np.random.seed(args.seed)
+    import random
+    random.seed(args.seed)
+    
+    pipeline = ForecastingPipeline(args.config, random_seed=args.seed)
     pipeline.run(scenario_filter=args.scenario)
     pipeline.save_results(args.output)

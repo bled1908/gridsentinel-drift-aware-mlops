@@ -11,12 +11,15 @@ class LoadForecaster:
     Follows the Role 2 contract for clean fit/predict/evaluate API.
     """
     
-    def __init__(self, model_params: dict = None):
+    def __init__(self, model_params: dict = None, random_seed: int = 42):
         """
         Args:
             model_params (dict): XGBoost hyperparameters.
+            random_seed (int): Random seed for reproducibility and variance.
         """
         self.model_params = model_params or self._default_params()
+        # Override random_state with the provided seed
+        self.model_params['random_state'] = random_seed
         self.model = None
         self.feature_names = None
         
@@ -26,10 +29,10 @@ class LoadForecaster:
             'n_estimators': 250,      # Slightly increased for better fit
             'max_depth': 6,           # Moderate depth to prevent overfitting
             'learning_rate': 0.05,    # Low LR for stability
-            'subsample': 0.8,
-            'colsample_bytree': 0.8,
+            'subsample': 0.8,         # Stochastic subsampling for variance
+            'colsample_bytree': 0.8,  # Stochastic feature sampling for variance
             'objective': 'reg:squarederror',
-            'random_state': 42,
+            'random_state': 42,       # Default, will be overridden by __init__
             'n_jobs': -1
         }
     
