@@ -1,0 +1,30 @@
+# Docker
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Data (large files — mount at runtime)
+data/
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+
+# Test artefacts
+.pytest_cache/
+htmlcov/
+.coverage
+*.egg-info/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# CI
+.github/

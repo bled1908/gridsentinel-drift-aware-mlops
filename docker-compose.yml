@@ -1,0 +1,23 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    image: gridsentinel-api:latest
+    container_name: gridsentinel_api
+    ports:
+      - "8000:8000"
+    environment:
+      - MODEL_PATH=/app/models/xgboost_baseline.json
+      - LOG_LEVEL=INFO
+    volumes:
+      # Mount models dir so you can swap models without rebuilding
+      - ./models:/app/models:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
