@@ -1,221 +1,218 @@
-import pandas as pd
-import numpy as np
-from pathlib import Path
+"""Main MLOps pipeline orchestration."""
+import argparse
+import random
 import time
-import yaml
-from datetime import timedelta
 import warnings
+from datetime import timedelta
+from pathlib import Path
+from typing import Optional
 
-# Import modules from previous roles
-from forecasting_model import LoadForecaster
+import numpy as np
+import pandas as pd
+import yaml
+
 from drift_detection import DriftMonitor
+from forecasting_model import LoadForecaster
+from logger import get_logger
 from retraining_policies import get_policy
 
-warnings.filterwarnings('ignore')
+warnings.filterwarnings("ignore")
+log = get_logger(__name__)
+
 
 class ForecastingPipeline:
-    """Main MLOps pipeline for drift-aware retraining experiments."""
-    
-    def __init__(self, config_path: str, random_seed: int = 42):
-        with open(config_path, 'r') as f:
-            self.config = yaml.safe_load(f)
-        
+    """
+    End-to-end MLOps pipeline for drift-aware load forecasting.
+
+    Orchestrates data loading, initial model training, sliding-window
+    inference, drift detection, policy evaluation, and optional retraining.
+    """
+
+    def __init__(self, config_path: str, random_seed: int = 42) -> None:
+        """
+        Args:
+            config_path:  Path to a policy YAML configuration file.
+            random_seed:  Seed for XGBoost and all numpy/random operations.
+        """
+        with open(config_path) as fh:
+            self.config: dict = yaml.safe_load(fh)
+
         self.random_seed = random_seed
-            
-        # Load Data
-        print("Loading data...")
-        self.train_df = pd.read_csv(self.config['data']['train_path'], index_col=0, parse_dates=True)
-        self.val_df = pd.read_csv(self.config['data']['val_path'], index_col=0, parse_dates=True)
-        self.test_df = pd.read_csv(self.config['data']['test_path'], index_col=0, parse_dates=True)
-        
-        # Initialize Forecaster with random seed
-        print(f"Initializing Initial Model with seed {random_seed}...")
+
+        # Data
+        log.info("Loading processed datasets…")
+        self.train_df = pd.read_csv(self.config["data"]["train_path"], index_col=0, parse_dates=True)
+        self.val_df = pd.read_csv(self.config["data"]["val_path"], index_col=0, parse_dates=True)
+        self.test_df = pd.read_csv(self.config["data"]["test_path"], index_col=0, parse_dates=True)
+
+        # Initial model
+        log.info("Training initial model (seed=%d)…", random_seed)
         self.forecaster = LoadForecaster(
-            model_params=self.config['model']['hyperparameters'],
-            random_seed=random_seed
+            model_params=self.config["model"]["hyperparameters"],
+            random_seed=random_seed,
         )
-        
-        # Train Initial Model
         X_train, y_train = self._split_X_y(self.train_df)
         self.forecaster.fit(X_train, y_train)
-        
-        # Initialize Drift Monitor
+
+        # Drift monitor
         X_val, y_val = self._split_X_y(self.val_df)
         baseline_metrics = self.forecaster.evaluate(X_val, y_val)
-        
+        log.info("Validation MAPE (baseline): %.4f%%", baseline_metrics["MAPE"])
+
         self.drift_monitor = DriftMonitor(
             reference_data=X_train,
             reference_target=y_train,
-            features_to_monitor=self.config['drift']['features_to_monitor'],
-            psi_threshold=self.config['drift']['psi_threshold'],
-            ks_drift_count=self.config['drift']['ks_drift_count'],
-            mape_alpha=self.config['drift']['mape_alpha'],
-            mape_beta=self.config['drift']['mape_beta']
+            features_to_monitor=self.config["drift"]["features_to_monitor"],
+            psi_threshold=self.config["drift"]["psi_threshold"],
+            ks_drift_count=self.config["drift"]["ks_drift_count"],
+            mape_alpha=self.config["drift"]["mape_alpha"],
+            mape_beta=self.config["drift"]["mape_beta"],
         )
-        self.drift_monitor.set_baseline_mape(baseline_metrics['MAPE'])
-        
-        # Initialize Policy
-        policy_config = self.config['policy']
-        # Inject the dynamic baseline MAPE into policy config
-        policy_config['baseline_mape'] = baseline_metrics['MAPE']
-        self.policy = get_policy(policy_config['name'], policy_config)
-        
-        # Logging
-        self.event_log = []
-        self.metrics_log = []
+        self.drift_monitor.set_baseline_mape(baseline_metrics["MAPE"])
 
-    def _split_X_y(self, df):
-        feature_cols = [c for c in df.columns if c not in ['load', 'scenario']]
-        X = df[feature_cols]
-        y = df['load']
-        return X, y
+        # Policy
+        policy_config = dict(self.config["policy"])
+        policy_config["baseline_mape"] = baseline_metrics["MAPE"]
+        self.policy = get_policy(policy_config["name"], policy_config)
+        log.info("Policy initialised: %s", policy_config["name"])
 
-    def run(self, scenario_filter: str = None):
-        """Run pipeline on test data."""
-        
-        # Filter test data by scenario
+        # Logging buffers
+        self.event_log: list[dict] = []
+        self.metrics_log: list[dict] = []
+
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
+
+    def _split_X_y(self, df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
+        """Split a DataFrame into feature matrix X and target series y."""
+        feature_cols = [c for c in df.columns if c not in ("load", "scenario")]
+        return df[feature_cols], df["load"]
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def run(self, scenario_filter: Optional[str] = None) -> tuple[list[dict], list[dict]]:
+        """
+        Execute the sliding-window forecasting loop over the test set.
+
+        Args:
+            scenario_filter: If provided, restrict inference to rows whose
+                             ``scenario`` column matches this value.
+
+        Returns:
+            Tuple of (metrics_log, event_log) — lists of per-window dicts.
+        """
         if scenario_filter:
-            if 'scenario' in self.test_df.columns:
-                 # Check if scenario exists
-                if scenario_filter not in self.test_df['scenario'].unique():
-                     print(f"Warning: Scenario '{scenario_filter}' not found in test data.")
-                     return [], []
-                test_data = self.test_df[self.test_df['scenario'] == scenario_filter].copy()
-            else:
-                print("Warning: 'scenario' column not found in test data.")
+            if "scenario" not in self.test_df.columns:
+                log.warning("'scenario' column not found — running on full test set.")
                 test_data = self.test_df.copy()
+            elif scenario_filter not in self.test_df["scenario"].unique():
+                log.warning("Scenario '%s' not found in test data.", scenario_filter)
+                return [], []
+            else:
+                test_data = self.test_df[self.test_df["scenario"] == scenario_filter].copy()
         else:
             test_data = self.test_df.copy()
-            
-        print(f"Starting Pipeline on {len(test_data)} test samples...")
-        
-        forecast_window_hours = self.config['pipeline']['forecast_window_hours']
-        retrain_window_days = self.config['pipeline']['retrain_window_days']
-        step_size_hours = self.config['pipeline']['step_size_hours']
-        
-        start_idx = 0
+
+        log.info("Starting inference loop: %d samples, scenario=%s", len(test_data), scenario_filter)
+
+        window_hours: int = self.config["pipeline"]["forecast_window_hours"]
+        retrain_days: int = self.config["pipeline"]["retrain_window_days"]
+        step_hours: int = int(self.config["pipeline"]["step_size_hours"])
         num_retrains = 0
-        
-        # Sliding Window Loop
+        start_idx = 0
+
         while start_idx < len(test_data):
-            end_idx = min(start_idx + forecast_window_hours, len(test_data))
-            current_window = test_data.iloc[start_idx:end_idx]
-            
-            if len(current_window) == 0:
+            end_idx = min(start_idx + window_hours, len(test_data))
+            window = test_data.iloc[start_idx:end_idx]
+            if len(window) == 0:
                 break
-                
-            current_time = current_window.index[0]
-            
-            # 1. Generate Forecast
-            X_current, y_current = self._split_X_y(current_window)
-            y_pred = self.forecaster.predict(X_current)
-            
-            # 2. Evaluate Performance
-            current_metrics = self.forecaster.evaluate(X_current, y_current)
-            
-            # 3. Detect Drift
-            drift_result = self.drift_monitor.detect_drift(
-                current_data=X_current,
-                current_target=y_current,
-                recent_mape=current_metrics['MAPE']
-            )
-            
-            # 4. Log Metrics
+
+            current_time: pd.Timestamp = window.index[0]
+            X_w, y_w = self._split_X_y(window)
+
+            y_pred = self.forecaster.predict(X_w)
+            metrics = self.forecaster.evaluate(X_w, y_w)
+            drift_result = self.drift_monitor.detect_drift(X_w, y_w, metrics["MAPE"])
+
             self.metrics_log.append({
-                'timestamp': current_time,
-                'mape': current_metrics['MAPE'],
-                'rmse': current_metrics['RMSE'],
-                'psi': drift_result['psi']['psi'],
-                'ks_drifted': drift_result['ks']['num_drifted'],
-                'overall_drift': drift_result['overall_drift']
+                "timestamp": current_time,
+                "mape": metrics["MAPE"],
+                "rmse": metrics["RMSE"],
+                "psi": drift_result["psi"]["psi"],
+                "ks_drifted": drift_result["ks"]["num_drifted"],
+                "overall_drift": drift_result["overall_drift"],
             })
-            
-            # 5. Check Retraining Policy
-            should_retrain = self.policy.should_retrain(
-                current_time=current_time,
-                metrics=current_metrics,
-                drift_signals=drift_result
-            )
-            
-            if should_retrain:
-                print(f"[{current_time}] RETRAIN TRIGGERED (Policy: {self.config['policy']['name']})")
-                
-                retrain_start_time = time.time()
-                
-                # Get recent data for retraining (lookback from current time)
+
+            if self.policy.should_retrain(current_time, metrics, drift_result):
+                log.info("[%s] Retrain triggered by %s", current_time, self.config["policy"]["name"])
+                t0 = time.time()
+
                 retrain_end = current_time
-                retrain_start = retrain_end - timedelta(days=retrain_window_days)
-                
-                # Combine train + available test data up to retrain_end
-                # Note: In real prod, this would be a database query. 
-                # Here we simulate by concatenating and slicing.
+                retrain_start = retrain_end - timedelta(days=retrain_days)
                 full_history = pd.concat([self.train_df, self.test_df.loc[:retrain_end]])
                 retrain_data = full_history.loc[retrain_start:retrain_end]
-                
-                if len(retrain_data) > 100: # Safety check
-                    X_retrain, y_retrain = self._split_X_y(retrain_data)
-                    # Create new forecaster with same seed for retraining
-                    self.forecaster = LoadForecaster(
-                        model_params=self.config['model']['hyperparameters'],
-                        random_seed=self.random_seed
-                    )
-                    self.forecaster.fit(X_retrain, y_retrain)
-                    
-                    retrain_elapsed = time.time() - retrain_start_time
-                    num_retrains += 1
-                    
-                    # Log Event
-                    self.event_log.append({
-                        'timestamp': current_time,
-                        'event': 'retrain',
-                        'retrain_time_seconds': retrain_elapsed,
-                        'trigger_reason': 'policy_trigger'
-                    })
-                else:
-                    print("Skipping retrain: Insufficient history data.")
 
-            # Move to next window
-            start_idx += int(step_size_hours) # step forward
-            
-        print(f"Pipeline complete. Total retrains: {num_retrains}")
+                if len(retrain_data) > 100:
+                    X_r, y_r = self._split_X_y(retrain_data)
+                    self.forecaster = LoadForecaster(
+                        model_params=self.config["model"]["hyperparameters"],
+                        random_seed=self.random_seed,
+                    )
+                    self.forecaster.fit(X_r, y_r)
+                    elapsed = time.time() - t0
+                    num_retrains += 1
+                    self.event_log.append({
+                        "timestamp": current_time,
+                        "event": "retrain",
+                        "retrain_time_seconds": elapsed,
+                        "trigger_reason": "policy_trigger",
+                    })
+                    log.info("Retrain complete in %.2fs (total retrains: %d)", elapsed, num_retrains)
+                else:
+                    log.warning("Skipping retrain: insufficient history (%d rows)", len(retrain_data))
+
+            start_idx += step_hours
+
+        log.info("Pipeline complete. Total retrains: %d", num_retrains)
         return self.metrics_log, self.event_log
 
-    def save_results(self, output_dir: str):
-        """Save metrics and events to CSV [cite: 2030-2040]."""
-        output_path = Path(output_dir)
-        output_path.mkdir(parents=True, exist_ok=True)
-        
-        policy_name = self.config['policy']['name']
-        
-        # Save Metrics
-        if self.metrics_log:
-            metrics_df = pd.DataFrame(self.metrics_log)
-            metrics_df.to_csv(output_path / f"{policy_name}_metrics.csv", index=False)
-            
-        # Save Events
-        if self.event_log:
-            events_df = pd.DataFrame(self.event_log)
-            events_df.to_csv(output_path / f"{policy_name}_events.csv", index=False)
-        else:
-            # Create empty event file if no retrains occurred (for consistency)
-            pd.DataFrame(columns=['timestamp', 'event']).to_csv(output_path / f"{policy_name}_events.csv", index=False)
-            
-        print(f"Results saved to {output_dir}")
+    def save_results(self, output_dir: str) -> None:
+        """
+        Persist metrics and event logs as CSV files under *output_dir*.
 
-if __name__ == '__main__':
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--config', type=str, required=True, help='Path to config YAML')
-    parser.add_argument('--scenario', type=str, default=None, help='Test scenario filter')
-    parser.add_argument('--output', type=str, default='results/experiments', help='Output dir')
-    parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility')
+        Args:
+            output_dir: Directory path (created if it does not exist).
+        """
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        policy_name = self.config["policy"]["name"]
+
+        if self.metrics_log:
+            pd.DataFrame(self.metrics_log).to_csv(out / f"{policy_name}_metrics.csv", index=False)
+
+        events_df = pd.DataFrame(self.event_log) if self.event_log else pd.DataFrame(columns=["timestamp", "event"])
+        events_df.to_csv(out / f"{policy_name}_events.csv", index=False)
+        log.info("Results saved to %s/", output_dir)
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="GridSentinel forecasting pipeline")
+    parser.add_argument("--config", type=str, required=True, help="Path to policy YAML config")
+    parser.add_argument("--scenario", type=str, default=None, help="Test scenario filter")
+    parser.add_argument("--output", type=str, default="results/experiments", help="Output directory")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
     args = parser.parse_args()
-    
-    # Set random seeds for reproducibility
+
     np.random.seed(args.seed)
-    import random
     random.seed(args.seed)
-    
+
     pipeline = ForecastingPipeline(args.config, random_seed=args.seed)
     pipeline.run(scenario_filter=args.scenario)
     pipeline.save_results(args.output)
